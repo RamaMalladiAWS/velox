@@ -1887,8 +1887,7 @@ struct TaskMemoryUsage {
 void collectOperatorMemoryUsage(
     NodeMemoryUsage& nodeMemoryUsage,
     memory::MemoryPool* operatorPool) {
-  const auto numBytes =
-      operatorPool->getMemoryUsageTracker()->getCurrentTotalBytes();
+  const auto numBytes = operatorPool->getMemoryUsageTracker()->currentBytes();
   nodeMemoryUsage.total.update(numBytes);
   auto& operatorMemoryUsage = nodeMemoryUsage.operators[operatorPool->name()];
   operatorMemoryUsage.update(numBytes);
@@ -1899,7 +1898,7 @@ void collectNodeMemoryUsage(
     memory::MemoryPool* nodePool) {
   // Update task's stats from each node.
   taskMemoryUsage.total.update(
-      nodePool->getMemoryUsageTracker()->getCurrentTotalBytes());
+      nodePool->getMemoryUsageTracker()->currentBytes());
 
   // NOTE: we use a plan node id as the node memory pool's name.
   const auto& poolName = nodePool->name();
@@ -1942,8 +1941,7 @@ std::string getQueryMemoryUsageString(memory::MemoryPool* queryPool) {
   out << "\n";
   out << queryPool->name();
   out << ": total: ";
-  out << succinctBytes(
-      queryPool->getMemoryUsageTracker()->getCurrentTotalBytes());
+  out << succinctBytes(queryPool->getMemoryUsageTracker()->currentBytes());
   for (const auto& taskMemoryUsage : taskMemoryUsages) {
     taskMemoryUsage.toString(out);
     // Collect each operator's memory usage into the vector.

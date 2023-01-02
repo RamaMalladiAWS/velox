@@ -45,15 +45,14 @@ DECLARE_int32(memory_usage_aggregation_interval_millis);
 namespace facebook {
 namespace velox {
 namespace memory {
-
-/// This class provides the memory allocation interfaces for query execution.
-/// Each query execution creates a dedicated memory pool object. The memory pool
-/// objects from a query are organized as a tree with four levels which mirrors
-/// the query's physical execution plan:
+/// This class provides the memory allocation interfaces for a query execution.
+/// Each query execution entity creates a dedicated memory pool object. The
+/// memory pool objects from a query are organized as a tree with four levels
+/// which reflects the query's physical execution plan:
 ///
 /// The top level is a single root pool object (query pool) associated with the
 /// query. The query pool is created on the first executed query task and owned
-/// by QueryCtx. Note that the query pool is optional as not all engines
+/// by QueryCtx. Note that the query pool is optional as not all the engines
 /// using memory pool are creating multiple tasks for the same query in the same
 /// process.
 ///
@@ -106,7 +105,7 @@ class MemoryPool : public std::enable_shared_from_this<MemoryPool> {
   MemoryPool(
       const std::string& name,
       std::shared_ptr<MemoryPool> parent,
-      uint16_t alignment);
+      const Options& options);
 
   /// Removes this memory pool's tracking from its parent through dropChild().
   /// Drops the shared reference to its parent.
@@ -146,7 +145,7 @@ class MemoryPool : public std::enable_shared_from_this<MemoryPool> {
   virtual void* FOLLY_NULLABLE
   allocateZeroFilled(int64_t numEntries, int64_t sizeEach) = 0;
 
-  /// Re-allocatea from an existing buffer with 'newSize' and update memory
+  /// Re-allocates from an existing buffer with 'newSize' and update memory
   /// usage counting accordingly. If 'newSize' is larger than the current buffer
   /// 'size', the function will allocate a new buffer and free the old buffer.
   virtual void* FOLLY_NULLABLE
@@ -194,7 +193,7 @@ class MemoryPool : public std::enable_shared_from_this<MemoryPool> {
 
   /// Returns the memory allocation alignment size applied internally by this
   /// memory pool object.
-  virtual uint16_t alignment() const {
+  virtual uint16_t getAlignment() const {
     return alignment_;
   }
 
@@ -231,10 +230,10 @@ class MemoryPool : public std::enable_shared_from_this<MemoryPool> {
     VELOX_NYI("reserve() needs to be implemented in derived memory pool.");
   }
 
-  /// Sometimes in memory management we want to mock an update for quota
+  /// Sometimes in memory governance we want to mock an update for quota
   /// accounting purposes and different implementations can
   /// choose to accommodate this differently.
-  virtual void release(int64_t /* bytes */, bool /* mock */ = false) {
+  virtual void release(int64_t /* bytes */) {
     VELOX_NYI("release() needs to be implemented in derived memory pool.");
   }
 
@@ -286,18 +285,7 @@ class MemoryPoolImpl : public MemoryPool {
       std::shared_ptr<MemoryPool> parent,
       const Options& options = Options{});
 
-  ~MemoryPoolImpl() {
-    if (const auto& tracker = getMemoryUsageTracker()) {
-      auto remainingBytes = tracker->getCurrentUserBytes();
-      VELOX_CHECK_EQ(
-          0,
-          remainingBytes,
-          "Memory pool should be destroyed only after all allocated memory has been freed. Remaining bytes allocated: {}, cumulative bytes allocated: {}, number of allocations: {}",
-          remainingBytes,
-          tracker->getCumulativeBytes(),
-          tracker->getNumAllocs());
-    }
-  }
+  ~MemoryPoolImpl();
 
   // Actual memory allocation operations. Can be delegated.
   // Access global MemoryManager to check usage of current node and enforce
@@ -352,7 +340,7 @@ class MemoryPoolImpl : public MemoryPool {
 
   int64_t cap() const override;
 
-  uint16_t alignment() const override;
+  uint16_t getAlignment() const override;
 
   void capMemoryAllocation() override;
 
@@ -379,17 +367,12 @@ class MemoryPoolImpl : public MemoryPool {
   // TODO: consider returning bool instead.
   void reserve(int64_t size) override;
 
-  void release(int64_t size, bool mock = false) override;
+  void release(int64_t size) override;
 
  private:
   VELOX_FRIEND_TEST(MemoryPoolTest, Ctor);
 
   int64_t sizeAlign(int64_t size);
-
-  void* FOLLY_NULLABLE
-  reallocAligned(void* FOLLY_NULLABLE p, int64_t size, int64_t newSize) {
-    return allocator_.reallocateBytes(p, size, newSize, alignment_);
-  }
 
   void accessSubtreeMemoryUsage(
       std::function<void(const MemoryUsage&)> visitor) const;
@@ -426,10 +409,10 @@ class IMemoryManager {
 
   virtual ~IMemoryManager() = default;
 
-  /// Returns the total memory usage in bytes allowed under this memory manager.
-  /// The memory manager maintains this capacity as a hard cap, and any
-  /// allocation that would exceed the quota throws.
-  virtual int64_t capacity() const = 0;
+  /// Returns the total memory usage allowed under this memory manager.
+  /// The memory manager maintains this quota as a hard cap, and any allocation
+  /// that would exceed the quota throws.
+  virtual int64_t getMemoryQuota() const = 0;
 
   /// Returns the memory allocation alignment of this memory manager.
   virtual uint16_t alignment() const = 0;
@@ -447,7 +430,7 @@ class IMemoryManager {
   /// Returns the current total memory usage under this memory manager.
   virtual int64_t getTotalBytes() const = 0;
 
-  /// Reserves size for the allocation. Return a true if the total usage remains
+  /// Reserves size for the allocation. Returns true if the total usage remains
   /// under quota after the reservation. Caller is responsible for releasing the
   /// offending reservation.
   ///
@@ -460,17 +443,20 @@ class IMemoryManager {
   virtual void release(int64_t size) = 0;
 };
 
+/// For now, users wanting multiple different allocators would need to
+/// instantiate different MemoryManager classes and manage them across static
+/// boundaries.
 class MemoryManager final : public IMemoryManager {
  public:
   /// Tries to get the singleton memory manager. If not previously initialized,
-  /// the process singleton manager will be initialized with the 'options'.
+  /// the process singleton manager will be initialized with the given quota.
   FOLLY_EXPORT static MemoryManager& getInstance(
       const Options& options = Options{},
-      bool ensureCapacity = false) {
+      bool ensureQuota = false) {
     static MemoryManager manager{options};
-    auto actualCapacity = manager.capacity();
+    auto actualCapacity = manager.getMemoryQuota();
     VELOX_USER_CHECK(
-        !ensureCapacity || actualCapacity == options.capacity,
+        !ensureQuota || actualCapacity == options.capacity,
         "Process level manager manager created with input capacity: {}, actual capacity: {}",
         options.capacity,
         actualCapacity);
@@ -482,7 +468,7 @@ class MemoryManager final : public IMemoryManager {
 
   ~MemoryManager();
 
-  int64_t capacity() const final;
+  int64_t getMemoryQuota() const final;
 
   uint16_t alignment() const final;
 
@@ -505,9 +491,9 @@ class MemoryManager final : public IMemoryManager {
   VELOX_FRIEND_TEST(MultiThreadingUncappingTest, Flat);
   VELOX_FRIEND_TEST(MultiThreadingUncappingTest, SimpleTree);
 
-  MemoryAllocator* const FOLLY_NONNULL allocator_;
+  const std::shared_ptr<MemoryAllocator> allocator_;
+  const int64_t memoryQuota_;
   const uint16_t alignment_;
-  const int64_t capacity_;
 
   std::shared_ptr<MemoryPool> root_;
   mutable folly::SharedMutex mutex_;

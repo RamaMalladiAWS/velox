@@ -34,20 +34,6 @@ namespace facebook::velox::memory {
 /// of a size class dependent number of consecutive machine pages.
 using ClassPageCount = int32_t;
 
-struct MmapAllocatorOptions {
-  ///  Capacity in bytes, default 512MB
-  uint64_t capacity = 1L << 29;
-
-  /// If set true, allocations larger than largest size class size will be
-  /// delegated to ManagedMmapArena. Otherwise a system mmap call will be
-  /// issued for each such allocation.
-  bool useMmapArena = false;
-
-  /// Used to determine MmapArena capacity. The ratio represents system memory
-  /// capacity to single MmapArena capacity ratio.
-  int32_t mmapArenaCapacityRatio = 10;
-};
-
 /// Implementation of MemoryAllocator with mmap and madvise. Each size class is
 /// mmapped for the whole capacity. Each size class has a bitmap of allocated
 /// entries and entries that are backed by memory. If a size class does not have
@@ -62,19 +48,23 @@ struct MmapAllocatorOptions {
 /// malloc.
 class MmapAllocator : public MemoryAllocator {
  public:
+  struct Options {
+    ///  Capacity in bytes, default 512MB
+    uint64_t capacity = 1L << 29;
+
+    /// If set true, allocations larger than largest size class size will be
+    /// delegated to ManagedMmapArena. Otherwise a system mmap call will be
+    /// issued for each such allocation.
+    bool useMmapArena = false;
+
+    /// Used to determine MmapArena capacity. The ratio represents system memory
+    /// capacity to single MmapArena capacity ratio.
+    int32_t mmapArenaCapacityRatio = 10;
+  };
+
   enum class Failure { kNone, kMadvise, kMmap };
 
-  explicit MmapAllocator(const MmapAllocatorOptions& options);
-
-  void* FOLLY_NULLABLE allocateBytes(
-      uint64_t bytes,
-      uint16_t alignment,
-      uint64_t maxMallocSize) override;
-
-  void freeBytes(
-      void* FOLLY_NONNULL p,
-      uint64_t size,
-      uint64_t maxMallocSize = kMaxMallocBytes) noexcept override;
+  explicit MmapAllocator(const Options& options);
 
   bool allocateNonContiguous(
       MachinePageCount numPages,
@@ -102,6 +92,11 @@ class MmapAllocator : public MemoryAllocator {
     stats_.recordFree(
         allocation.size(), [&]() { freeContiguousImpl(allocation); });
   }
+
+  void* FOLLY_NULLABLE
+  allocateBytes(uint64_t bytes, uint16_t alignment) override;
+
+  void freeBytes(void* p, uint64_t bytes) noexcept override;
 
   /// Checks internal consistency of allocation data structures. Returns true if
   /// OK. May return false if there are concurrent allocations and frees during
@@ -156,9 +151,9 @@ class MmapAllocator : public MemoryAllocator {
       return unitSize_;
     }
 
-    // Allocates 'numPages' from 'this' and appends these to
-    // *out. '*numUnmapped' is incremented by the number of pages that
-    // are not backed by memory.
+    // Allocates 'numPages' from 'this' and appends these to *out.
+    // '*numUnmapped' is incremented by the number of pages that are not backed
+    // by memory.
     bool allocate(
         ClassPageCount numPages,
         MachinePageCount& numUnmapped,

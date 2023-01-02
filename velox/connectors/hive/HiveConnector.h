@@ -171,6 +171,7 @@ class HiveDataSource : public DataSource {
   velox::memory::MemoryPool* FOLLY_NONNULL pool_;
   std::shared_ptr<dwio::common::IoStatistics> ioStats_;
   std::shared_ptr<common::ScanSpec> scanSpec_;
+  std::shared_ptr<common::MetadataFilter> metadataFilter_;
   std::shared_ptr<HiveConnectorSplit> split_;
   dwio::common::ReaderOptions readerOpts_;
   dwio::common::RowReaderOptions rowReaderOpts_;
@@ -269,12 +270,12 @@ class HiveConnectorFactory : public ConnectorFactory {
       "hive-hadoop2";
 
   HiveConnectorFactory() : ConnectorFactory(kHiveConnectorName) {
-    dwio::common::FileSink::registerFactory();
+    dwio::common::LocalFileSink::registerFactory();
   }
 
   HiveConnectorFactory(const char* FOLLY_NONNULL connectorName)
       : ConnectorFactory(connectorName) {
-    dwio::common::FileSink::registerFactory();
+    dwio::common::LocalFileSink::registerFactory();
   }
 
   std::shared_ptr<Connector> newConnector(

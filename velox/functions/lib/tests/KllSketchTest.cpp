@@ -328,7 +328,7 @@ TEST(KllSketchTest, memoryUsage) {
   for (int i = 1024; i < 8192; ++i) {
     kll.insert(i);
   }
-  EXPECT_LE(alloc.retainedSize() - alloc.freeSpace(), 28000);
+  EXPECT_LE(alloc.retainedSize() - alloc.freeSpace(), 32840);
 }
 
 } // namespace

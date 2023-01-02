@@ -22,10 +22,10 @@
 namespace facebook::velox {
 
 void AllocationPool::clear() {
-  // Trigger Allocation's destructor to free allocated memory.
-  auto allocationToClear = std::move(allocation_);
+  // Trigger Allocation's destructor to free allocated memory
+  auto copy = std::move(allocation_);
   allocations_.clear();
-  auto largeAllocationToClear = std::move(largeAllocations_);
+  auto copyLarge = std::move(largeAllocations_);
   largeAllocations_.clear();
 }
 

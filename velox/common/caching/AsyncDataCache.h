@@ -140,7 +140,7 @@ class AsyncDataCacheEntry {
   static constexpr int32_t kExclusive = -10000;
   static constexpr int32_t kTinyDataSize = 2048;
 
-  explicit AsyncDataCacheEntry(CacheShard* shard);
+  explicit AsyncDataCacheEntry(CacheShard* FOLLY_NONNULL shard);
   ~AsyncDataCacheEntry();
 
   // Sets the key and allocates the entry's memory.  Resets
@@ -270,8 +270,8 @@ class AsyncDataCacheEntry {
   // The data being cached.
   memory::MemoryAllocator::Allocation data_;
 
-  // Contains the cached data if this is much smaller than a MappedMemory page
-  // (kTinyDataSize).
+  // Contains the cached data if this is much smaller than a MemoryAllocator
+  // page (kTinyDataSize).
   std::string tinyData_;
 
   std::unique_ptr<folly::SharedPromise<bool>> promise_;
@@ -504,7 +504,7 @@ struct CacheStats {
 // and other housekeeping.
 class CacheShard {
  public:
-  explicit CacheShard(AsyncDataCache* cache) : cache_(cache) {}
+  explicit CacheShard(AsyncDataCache* FOLLY_NONNULL cache) : cache_(cache) {}
 
   // See AsyncDataCache::findOrCreate.
   CachePin findOrCreate(
@@ -595,7 +595,7 @@ class CacheShard {
   // Sum of evict scores. This divided by 'numEvict_' correlates to
   // time data stays in cache.
   uint64_t sumEvictScore_{};
-  // Tracker of time spent in allocating/freeing MappedMemory space
+  // Tracker of time spent in allocating/freeing MemoryAllocator space
   // for backing cached data.
   std::atomic<uint64_t> allocClocks_;
 };
@@ -638,7 +638,7 @@ class AsyncDataCache : public memory::MemoryAllocator {
 
   bool allocateContiguous(
       memory::MachinePageCount numPages,
-      Allocation* collateral,
+      Allocation* FOLLY_NULLABLE collateral,
       ContiguousAllocation& allocation,
       ReservationCallback reservationCB = nullptr) override;
 
@@ -646,16 +646,10 @@ class AsyncDataCache : public memory::MemoryAllocator {
     allocator_->freeContiguous(allocation);
   }
 
-  void* allocateBytes(
-      uint64_t bytes,
-      uint16_t alignment,
-      uint64_t maxMallocSize = kMaxMallocBytes) override;
+  void* allocateBytes(uint64_t bytes, uint16_t alignment) override;
 
-  void freeBytes(
-      void* p,
-      uint64_t size,
-      uint64_t maxMallocSize = kMaxMallocBytes) noexcept override {
-    allocator_->freeBytes(p, size, maxMallocSize);
+  void freeBytes(void* p, uint64_t size) noexcept override {
+    allocator_->freeBytes(p, size);
   }
 
   bool checkConsistency() const override {

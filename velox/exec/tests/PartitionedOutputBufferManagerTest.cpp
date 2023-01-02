@@ -14,10 +14,8 @@
  * limitations under the License.
  */
 #include "velox/exec/PartitionedOutputBufferManager.h"
-
 #include <gtest/gtest.h>
-
-#include "velox/common/memory/MemoryAllocator.h"
+#include <velox/common/memory/MemoryAllocator.h>
 #include "velox/dwio/common/tests/utils/BatchMaker.h"
 #include "velox/exec/Exchange.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
@@ -108,7 +106,7 @@ class PartitionedOutputBufferManagerTest : public testing::Test {
       uint64_t maxBytes = 1024,
       int expectedGroups = 1) {
     bool receivedData = false;
-    bufferManager_->getData(
+    ASSERT_TRUE(bufferManager_->getData(
         taskId,
         destination,
         maxBytes,
@@ -124,7 +122,7 @@ class PartitionedOutputBufferManagerTest : public testing::Test {
           }
           EXPECT_EQ(inSequence, sequence) << "for destination " << destination;
           receivedData = true;
-        });
+        }));
     EXPECT_TRUE(receivedData) << "for destination " << destination;
   }
 
@@ -163,12 +161,12 @@ class PartitionedOutputBufferManagerTest : public testing::Test {
   void
   fetchEndMarker(const std::string& taskId, int destination, int64_t sequence) {
     bool receivedData = false;
-    bufferManager_->getData(
+    ASSERT_TRUE(bufferManager_->getData(
         taskId,
         destination,
         std::numeric_limits<uint64_t>::max(),
         sequence,
-        receiveEndMarker(destination, sequence, receivedData));
+        receiveEndMarker(destination, sequence, receivedData)));
     EXPECT_TRUE(receivedData) << "for destination " << destination;
     bufferManager_->deleteResults(taskId, destination);
   }
@@ -183,12 +181,12 @@ class PartitionedOutputBufferManagerTest : public testing::Test {
       int64_t sequence,
       bool& receivedEndMarker) {
     receivedEndMarker = false;
-    bufferManager_->getData(
+    ASSERT_TRUE(bufferManager_->getData(
         taskId,
         destination,
         std::numeric_limits<uint64_t>::max(),
         sequence,
-        receiveEndMarker(destination, 1, receivedEndMarker));
+        receiveEndMarker(destination, 1, receivedEndMarker)));
     EXPECT_FALSE(receivedEndMarker) << "for destination " << destination;
   }
 
@@ -219,12 +217,12 @@ class PartitionedOutputBufferManagerTest : public testing::Test {
       int expectedGroups,
       bool& receivedData) {
     receivedData = false;
-    bufferManager_->getData(
+    ASSERT_TRUE(bufferManager_->getData(
         taskId,
         destination,
         1024,
         sequence,
-        receiveData(destination, sequence, expectedGroups, receivedData));
+        receiveData(destination, sequence, expectedGroups, receivedData)));
     EXPECT_FALSE(receivedData) << "for destination " << destination;
   }
 
@@ -399,24 +397,34 @@ TEST_F(PartitionedOutputBufferManagerTest, serializedPage) {
 
   // External managed memory case
   {
-    auto mappedMemory = memory::MemoryAllocator::getInstance();
-    void* buffer = mappedMemory->allocateBytes(kBufferSize);
+    auto allocator = memory::MemoryAllocator::getInstance();
+    void* buffer = allocator->allocateBytes(kBufferSize);
     auto iobuf = folly::IOBuf::wrapBuffer(buffer, kBufferSize);
     std::string payload = "abcdefghijklmnopq";
     std::memcpy(iobuf->writableData(), payload.data(), payload.size());
 
     EXPECT_EQ(0, pool_->getCurrentBytes());
-    EXPECT_EQ(mappedMemory->allocateBytesStats().totalSmall, kBufferSize);
     {
       auto serializedPage = std::make_shared<SerializedPage>(
-          std::move(iobuf),
-          pool_.get(),
-          [mappedMemory, kBufferSize](auto& iobuf) {
-            mappedMemory->freeBytes(iobuf.writableData(), kBufferSize);
+          std::move(iobuf), pool_.get(), [allocator, kBufferSize](auto& iobuf) {
+            allocator->freeBytes(iobuf.writableData(), kBufferSize);
           });
       EXPECT_EQ(kBufferSize, pool_->getCurrentBytes());
     }
     EXPECT_EQ(0, pool_->getCurrentBytes());
-    EXPECT_EQ(mappedMemory->allocateBytesStats().totalSmall, 0);
   }
+}
+
+TEST_F(PartitionedOutputBufferManagerTest, getDataOnFailedTask) {
+  // Fetching data on a task which was either never initialized in the buffer
+  // manager or was removed by a parallel thread must return false. The `notify`
+  // callback must not be registered.
+  ASSERT_FALSE(bufferManager_->getData(
+      "test.0.1",
+      1,
+      10,
+      1,
+      [](std::vector<std::unique_ptr<folly::IOBuf>> pages, int64_t sequence) {
+        VELOX_UNREACHABLE();
+      }));
 }

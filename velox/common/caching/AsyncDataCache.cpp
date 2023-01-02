@@ -615,7 +615,7 @@ bool AsyncDataCache::allocateNonContiguous(
   freeNonContiguous(out);
   return makeSpace(numPages, [&]() {
     return allocator_->allocateNonContiguous(
-        numPages, out, reservationCB, minSizeClass);
+        numPages, out, std::move(reservationCB), minSizeClass);
   });
 }
 
@@ -630,13 +630,10 @@ bool AsyncDataCache::allocateContiguous(
   });
 }
 
-void* AsyncDataCache::allocateBytes(
-    uint64_t bytes,
-    uint16_t alignment,
-    uint64_t maxMallocSize) {
+void* AsyncDataCache::allocateBytes(uint64_t bytes, uint16_t alignment) {
   void* result = nullptr;
   makeSpace(bits::roundUp(bytes, kPageSize) / kPageSize, [&]() {
-    result = allocator_->allocateBytes(bytes, alignment, maxMallocSize);
+    result = allocator_->allocateBytes(bytes, alignment);
     return result != nullptr;
   });
   return result;

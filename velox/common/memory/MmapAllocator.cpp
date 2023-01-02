@@ -15,16 +15,17 @@
  */
 
 #include "velox/common/memory/MmapAllocator.h"
-#include "velox/common/base/Portability.h"
-#include "velox/common/testutil/TestValue.h"
 
 #include <sys/mman.h>
+
+#include "velox/common/base/Portability.h"
+#include "velox/common/testutil/TestValue.h"
 
 using facebook::velox::common::testutil::TestValue;
 
 namespace facebook::velox::memory {
 
-MmapAllocator::MmapAllocator(const MmapAllocatorOptions& options)
+MmapAllocator::MmapAllocator(const Options& options)
     : MemoryAllocator(),
       useMmapArena_(options.useMmapArena),
       numAllocated_(0),
@@ -42,75 +43,6 @@ MmapAllocator::MmapAllocator(const MmapAllocatorOptions& options)
     managedArenas_ = std::make_unique<ManagedMmapArenas>(
         std::max<uint64_t>(arenaSizeBytes, MmapArena::kMinCapacityBytes));
   }
-}
-
-void* FOLLY_NULLABLE MmapAllocator::allocateBytes(
-    uint64_t bytes,
-    uint16_t alignment,
-    uint64_t maxMallocSize) {
-  alignmentCheck(bytes, alignment);
-
-  if (bytes <= maxMallocSize) {
-    auto* result =
-        alignment != 0 ? ::aligned_alloc(alignment, bytes) : ::malloc(bytes);
-    if (result != nullptr) {
-      totalSmallAllocateBytes_ += bytes;
-    } else {
-      LOG(ERROR) << "Invalid aligned memory allocation with " << alignment
-                 << " alignment and " << bytes << " bytes";
-    }
-    return result;
-  }
-  if (bytes <= sizeClassSizes_.back() * kPageSize) {
-    Allocation allocation;
-    const auto numPages = roundUpToSizeClassSize(bytes, sizeClassSizes_);
-    if (allocateNonContiguous(numPages, allocation, nullptr, numPages)) {
-      auto run = allocation.runAt(0);
-      VELOX_CHECK_EQ(
-          1,
-          allocation.numRuns(),
-          "A size class allocateBytes must produce one run");
-      allocation.clear();
-      totalSizeClassAllocateBytes_ += numPages * kPageSize;
-      return run.data<char>();
-    }
-    return nullptr;
-  }
-
-  ContiguousAllocation allocation;
-  auto numPages = bits::roundUp(bytes, kPageSize) / kPageSize;
-  if (allocateContiguous(numPages, nullptr, allocation)) {
-    char* data = allocation.data<char>();
-    allocation.clear();
-    totalLargeAllocateBytes_ += numPages * kPageSize;
-    return data;
-  }
-  return nullptr;
-}
-
-void MmapAllocator::freeBytes(
-    void* p,
-    uint64_t bytes,
-    uint64_t maxMallocSize) noexcept {
-  if (bytes <= maxMallocSize) {
-    ::free(p); // NOLINT
-    totalSmallAllocateBytes_ -= bytes;
-    return;
-  }
-
-  if (bytes <= sizeClassSizes_.back() * kPageSize) {
-    Allocation allocation;
-    auto numPages = roundUpToSizeClassSize(bytes, sizeClassSizes_);
-    allocation.append(reinterpret_cast<uint8_t*>(p), numPages);
-    freeNonContiguous(allocation);
-    totalSizeClassAllocateBytes_ -= numPages * kPageSize;
-    return;
-  }
-
-  ContiguousAllocation allocation;
-  allocation.set(p, bytes);
-  freeContiguous(allocation);
-  totalLargeAllocateBytes_ -= bits::roundUp(bytes, kPageSize);
 }
 
 bool MmapAllocator::allocateNonContiguous(
@@ -404,6 +336,64 @@ void MmapAllocator::freeContiguousImpl(ContiguousAllocation& allocation) {
   numExternalMapped_ -= allocation.numPages();
   numAllocated_ -= allocation.numPages();
   allocation.clear();
+}
+
+void* MmapAllocator::allocateBytes(uint64_t bytes, uint16_t alignment) {
+  alignmentCheck(bytes, alignment);
+
+  if (bytes <= kMaxMallocBytes) {
+    auto* result = alignment > kMinAlignment ? ::aligned_alloc(alignment, bytes)
+                                             : ::malloc(bytes);
+    if (FOLLY_UNLIKELY(result == nullptr)) {
+      LOG(ERROR) << "Failed to allocateBytes " << bytes << " bytes with "
+                 << alignment << " alignment";
+    }
+    return result;
+  }
+
+  if (bytes <= sizeClassSizes_.back() * kPageSize) {
+    Allocation allocation;
+    const auto numPages = roundUpToSizeClassSize(bytes, sizeClassSizes_);
+    if (!allocateNonContiguous(numPages, allocation, nullptr, numPages)) {
+      return nullptr;
+    }
+    auto run = allocation.runAt(0);
+    VELOX_CHECK_EQ(
+        1,
+        allocation.numRuns(),
+        "A size class allocateBytes must produce one run");
+    allocation.clear();
+    return run.data<char>();
+  }
+
+  ContiguousAllocation allocation;
+  auto numPages = bits::roundUp(bytes, kPageSize) / kPageSize;
+  if (!allocateContiguous(numPages, nullptr, allocation)) {
+    return nullptr;
+  }
+
+  char* data = allocation.data<char>();
+  allocation.clear();
+  return data;
+}
+
+void MmapAllocator::freeBytes(void* p, uint64_t bytes) noexcept {
+  if (bytes <= kMaxMallocBytes) {
+    ::free(p); // NOLINT
+    return;
+  }
+
+  if (bytes <= sizeClassSizes_.back() * kPageSize) {
+    Allocation allocation;
+    auto numPages = roundUpToSizeClassSize(bytes, sizeClassSizes_);
+    allocation.append(reinterpret_cast<uint8_t*>(p), numPages);
+    freeNonContiguous(allocation);
+    return;
+  }
+
+  ContiguousAllocation allocation;
+  allocation.set(p, bytes);
+  freeContiguous(allocation);
 }
 
 void MmapAllocator::markAllMapped(const Allocation& allocation) {
@@ -758,10 +748,9 @@ void MmapAllocator::SizeClass::setMappedBits(
 
 MachinePageCount MmapAllocator::SizeClass::free(
     MemoryAllocator::Allocation& allocation) {
-  MachinePageCount numFreed = 0;
-  int firstRunInClass = -1;
+  int32_t firstRunInClass = -1;
   // Check if there are any runs in 'this' outside of 'mutex_'.
-  for (int i = 0; i < allocation.numRuns(); ++i) {
+  for (int32_t i = 0; i < allocation.numRuns(); ++i) {
     PageRun run = allocation.runAt(i);
     uint8_t* runAddress = run.data();
     if (isInRange(runAddress)) {
@@ -770,8 +759,9 @@ MachinePageCount MmapAllocator::SizeClass::free(
     }
   }
   if (firstRunInClass == -1) {
-    return numFreed;
+    return 0;
   }
+  MachinePageCount numFreed = 0;
   std::lock_guard<std::mutex> l(mutex_);
   for (int i = firstRunInClass; i < allocation.numRuns(); ++i) {
     PageRun run = allocation.runAt(i);

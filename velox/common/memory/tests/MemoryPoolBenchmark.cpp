@@ -30,7 +30,7 @@ namespace facebook::velox::memory {
 
 class BenchmarkHelper {
  public:
-  BenchmarkHelper(MemoryManager& manager)
+  explicit BenchmarkHelper(MemoryManager& manager)
       : manager_{manager}, leaves_{findLeaves()} {}
 
   std::vector<MemoryPool*> findLeaves() {

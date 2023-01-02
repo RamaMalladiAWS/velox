@@ -493,8 +493,9 @@ std::unique_ptr<SeekableInputStream> CachedBufferedInput::read(
 }
 
 bool CachedBufferedInput::prefetch(Region region) {
-  int32_t numPages = bits::roundUp(region.length, MemoryAllocator::kPageSize) /
-      MemoryAllocator::kPageSize;
+  int32_t numPages =
+      bits::roundUp(region.length, memory::MemoryAllocator::kPageSize) /
+      memory::MemoryAllocator::kPageSize;
   if (!shouldPreload(numPages)) {
     return false;
   }

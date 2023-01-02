@@ -41,9 +41,9 @@ class Task : public std::enable_shared_from_this<Task> {
   /// for a particular partition from a set of upstream tasks participating in a
   /// distributed execution. Used to initialize an ExchangeClient. Ignored if
   /// plan fragment doesn't have an ExchangeNode.
-  /// @param queryCtx Query context containing MemoryPool and MappedMemory
-  /// instances to use for memory allocations during execution, executor to
-  /// schedule operators on, and session properties.
+  /// @param queryCtx Query context containing MemoryPool instance to use for
+  /// memory allocations during execution, executor to schedule operators on,
+  /// and session properties.
   /// @param consumer Optional factory function to get callbacks to pass the
   /// results of the execution. In a multi-threaded execution, results from each
   /// thread are passed on to a separate consumer.
@@ -66,6 +66,12 @@ class Task : public std::enable_shared_from_this<Task> {
       std::function<void(std::exception_ptr)> onError = nullptr);
 
   ~Task();
+
+  /// Specify directory to which data will be spilled if spilling is enabled and
+  /// required.
+  void setSpillDirectory(const std::string& spillDirectory) {
+    spillDirectory_ = spillDirectory;
+  }
 
   std::string toString() const;
 
@@ -492,6 +498,10 @@ class Task : public std::enable_shared_from_this<Task> {
     return numDeletedTasks_;
   }
 
+  const std::string& spillDirectory() const {
+    return spillDirectory_;
+  }
+
   /// Invoked to wait for all the tasks created by the test to be deleted.
   ///
   /// NOTE: it is assumed that there is no more task to be created after or
@@ -720,8 +730,7 @@ class Task : public std::enable_shared_from_this<Task> {
   const std::shared_ptr<core::QueryCtx> queryCtx_;
 
   // Root MemoryPool for this Task. All member variables that hold references
-  // to pool_ must be defined after pool_, childPools_, and
-  // childMappedMemories_
+  // to pool_ must be defined after pool_, childPools_.
   std::shared_ptr<memory::MemoryPool> pool_;
 
   // Keep driver and operator memory pools alive for the duration of the task
@@ -842,6 +851,9 @@ class Task : public std::enable_shared_from_this<Task> {
   // terminate(). They are fulfilled when the last thread stops
   // running for 'this'.
   std::vector<ContinuePromise> threadFinishPromises_;
+
+  // Base spill directory for this task.
+  std::string spillDirectory_;
 };
 
 /// Listener invoked on task completion.

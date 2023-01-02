@@ -53,7 +53,7 @@ struct SizeClassStats {
   /// size class.
   std::atomic<int64_t> totalBytes{0};
 
-  SizeClassStats() {}
+  SizeClassStats() = default;
   SizeClassStats(const SizeClassStats& other) {
     *this = other;
   }
@@ -76,7 +76,7 @@ struct SizeClassStats {
     return result;
   }
 
-  // Returns the total clocks for this size class.
+  /// Returns the total clocks for this size class.
   uint64_t clocks() const {
     return allocateClocks + freeClocks;
   }
@@ -129,7 +129,7 @@ struct Stats {
     if (size == 0) {
       return 0;
     }
-    const int64_t power = bits::nextPowerOfTwo(size / kPageSize);
+    const auto power = bits::nextPowerOfTwo(size / kPageSize);
     return std::min(kNumSizes - 1, 63 - bits::countLeadingZeros(power));
   }
 
@@ -158,7 +158,7 @@ using MachinePageCount = uint64_t;
 /// all large allocation come from a single source to have dynamic balancing
 /// between different users. Proxy subclasses may provide context specific
 /// tracking while delegating the allocation to a root allocator.
-class MemoryAllocator : std::enable_shared_from_this<MemoryAllocator> {
+class MemoryAllocator : public std::enable_shared_from_this<MemoryAllocator> {
  public:
   /// Returns the process-wide default instance or an application-supplied
   /// custom instance set via setDefaultInstance().
@@ -180,12 +180,11 @@ class MemoryAllocator : std::enable_shared_from_this<MemoryAllocator> {
 
   static constexpr uint64_t kPageSize = 4096;
   static constexpr int32_t kMaxSizeClasses = 12;
-  /// Allocations smaller than 3K should go to malloc for MmapAllocator.
+  /// Allocations smaller than 3K should go to malloc.
   static constexpr int32_t kMaxMallocBytes = 3072;
-  static constexpr uint16_t kMinAlignment = 8;
+  static constexpr uint16_t kMinAlignment = alignof(max_align_t);
+  ;
   static constexpr uint16_t kMaxAlignment = 64;
-
-  static void validateAlignment(uint16_t alignment);
 
   /// Represents a number of consecutive pages of kPageSize bytes.
   class PageRun {
@@ -404,49 +403,6 @@ class MemoryAllocator : std::enable_shared_from_this<MemoryAllocator> {
     }
   };
 
-  /// Allocates 'bytes' contiguous bytes and returns the pointer to the first
-  /// byte. If 'bytes' is less than 'maxMallocSize', delegates the allocation to
-  /// malloc. If the size is above that and below the largest size classes'
-  /// size, allocates one element of the next size classes' size. If 'size' is
-  /// greater than the largest size classes' size, calls allocateContiguous().
-  /// Returns nullptr if there is no space. The amount to allocate is subject to
-  /// the size limit of 'this'. This function is not virtual but calls the
-  /// virtual functions allocateNonContiguous and allocateContiguous, which can
-  /// track sizes and enforce caps etc.
-  ///
-  /// NOTE: if not zero, 'alignment' must be power of two and in range of
-  /// [kMinAlignment, kMaxAlignment].
-  virtual void* FOLLY_NULLABLE allocateBytes(
-      uint64_t bytes,
-      uint16_t alignment = 0,
-      uint64_t maxMallocSize = kMaxMallocBytes) = 0;
-
-  /// Allocates a zero-filled contiguous bytes.
-  ///
-  /// NOTE: if not zero, 'alignment' must be power of two and in range of
-  /// [kMinAlignment, kMaxAlignment].
-  virtual void* FOLLY_NULLABLE
-  allocateZeroFilled(uint64_t bytes, uint64_t alignment = 0);
-
-  /// Allocates 'newSize' contiguous bytes. If 'p' is not null, this function
-  /// copies std::min(size, newSize) bytes from 'p' to the newly allocated
-  /// buffer and free 'p' after that.
-  ///
-  /// NOTE: if not zero, 'alignment' must be power of two and in range of
-  /// [kMinAlignment, kMaxAlignment].g
-  virtual void* FOLLY_NULLABLE reallocateBytes(
-      void* FOLLY_NULLABLE p,
-      int64_t size,
-      int64_t newSize,
-      uint16_t alignment = 0);
-
-  /// Frees contiguous memory allocated by allocateBytes, allocateZeroFilled,
-  /// reallocateBytes.
-  virtual void freeBytes(
-      void* FOLLY_NONNULL p,
-      uint64_t size,
-      uint64_t maxMallocSize = kMaxMallocBytes) noexcept = 0;
-
   using ReservationCallback = std::function<void(int64_t, bool)>;
 
   /// Allocates one or more runs that add up to at least 'numPages', with the
@@ -498,6 +454,42 @@ class MemoryAllocator : std::enable_shared_from_this<MemoryAllocator> {
   /// Frees contiguous 'allocation'. 'allocation' is empty on return.
   virtual void freeContiguous(ContiguousAllocation& allocation) = 0;
 
+  /// Allocates 'bytes' contiguous bytes and returns the pointer to the first
+  /// byte. If 'bytes' is less than 'kMaxMallocBytes', delegates the allocation
+  /// to malloc. If the size is above that and below the largest size classes'
+  /// size, allocates one element of the next size classes' size. If 'size' is
+  /// greater than the largest size classes' size, calls allocateContiguous().
+  /// Returns nullptr if there is no space. The amount to allocate is subject to
+  /// the size limit of 'this'. This function is not virtual but calls the
+  /// virtual functions allocateNonContiguous and allocateContiguous, which can
+  /// track sizes and enforce caps etc. If 'alignment' is not kMinAlignment,
+  /// then 'bytes' must be a multiple of 'alignment'.
+  ///
+  /// NOTE: 'alignment' must be power of two and in range of [kMinAlignment,
+  /// kMaxAlignment].
+  virtual void* FOLLY_NULLABLE
+  allocateBytes(uint64_t bytes, uint16_t alignment = kMinAlignment) = 0;
+
+  /// Allocates a zero-filled contiguous bytes.
+  virtual void* FOLLY_NULLABLE allocateZeroFilled(uint64_t bytes);
+
+  /// Allocates 'newSize' contiguous bytes. If 'p' is not null, this function
+  /// copies std::min(size, newSize) bytes from 'p' to the newly allocated
+  /// buffer and free 'p' after that. If 'alignment' is not kMinAlignment, then
+  /// newSize must be a multiple of 'alignment'.
+  ///
+  /// NOTE: 'alignment' must be power of two and in range of [kMinAlignment,
+  /// kMaxAlignment].
+  virtual void* FOLLY_NULLABLE reallocateBytes(
+      void* FOLLY_NONNULL p,
+      int64_t size,
+      int64_t newSize,
+      uint16_t alignment = kMinAlignment);
+
+  /// Frees contiguous memory allocated by allocateBytes, allocateZeroFilled,
+  /// reallocateBytes.
+  virtual void freeBytes(void* FOLLY_NONNULL p, uint64_t size) noexcept = 0;
+
   /// Checks internal consistency of allocation data structures. Returns true if
   /// OK.
   virtual bool checkConsistency() const = 0;
@@ -515,31 +507,21 @@ class MemoryAllocator : std::enable_shared_from_this<MemoryAllocator> {
 
   virtual MachinePageCount numMapped() const = 0;
 
-  /// Returns static counters for allocateBytes usage.
-  static AllocateBytesStats allocateBytesStats() {
-    return {
-        totalSmallAllocateBytes_,
-        totalSizeClassAllocateBytes_,
-        totalLargeAllocateBytes_};
-  }
-
-  /// Clears counters to revert effect of previous tests.
-  static void testingClearAllocateBytesStats() {
-    totalSmallAllocateBytes_ = 0;
-    totalSizeClassAllocateBytes_ = 0;
-    totalLargeAllocateBytes_ = 0;
-  }
-
   virtual Stats stats() const {
     return Stats();
   }
 
   virtual std::string toString() const;
 
- protected:
-  // Invoked to check if 'alignmentBytes' is valid and 'allocateBytes' is
-  // multiple of 'alignmentBytes'.
+  /// Invoked to check if 'alignmentBytes' is valid and 'allocateBytes' is
+  /// multiple of 'alignmentBytes'.
   static void alignmentCheck(uint64_t allocateBytes, uint16_t alignmentBytes);
+
+ protected:
+  // Returns the size class size that corresponds to 'bytes'.
+  static MachinePageCount roundUpToSizeClassSize(
+      size_t bytes,
+      const std::vector<MachinePageCount>& sizes);
 
   // Represents a mix of blocks of different sizes for covering a single
   // allocation.
@@ -555,14 +537,9 @@ class MemoryAllocator : std::enable_shared_from_this<MemoryAllocator> {
     int32_t totalPages{0};
   };
 
-  // Returns the size class size that corresponds to 'bytes'.
-  static MachinePageCount roundUpToSizeClassSize(
-      size_t bytes,
-      const std::vector<MachinePageCount>& sizes);
-
-  // Returns a mix of standard sizes and allocation counts for covering
-  // 'numPages' worth of memory. 'minSizeClass' is the size of the smallest
-  // usable size class.
+  /// Returns a mix of standard sizes and allocation counts for covering
+  /// 'numPages' worth of memory. 'minSizeClass' is the size of the smallest
+  /// usable size class.
   SizeMix allocationSize(
       MachinePageCount numPages,
       MachinePageCount minSizeClass) const;
@@ -572,22 +549,13 @@ class MemoryAllocator : std::enable_shared_from_this<MemoryAllocator> {
   const std::vector<MachinePageCount>
       sizeClassSizes_{1, 2, 4, 8, 16, 32, 64, 128, 256};
 
-  // Static counters for STL and memoryPool users of
-  // MemoryAllocator. Updated by allocateBytes() and freeBytes(). These
-  // are intended to be exported via StatsReporter. These are
-  // respectively backed by malloc, allocate from a single size class
-  // and standalone mmap.
-  inline static std::atomic<uint64_t> totalSmallAllocateBytes_;
-  inline static std::atomic<uint64_t> totalSizeClassAllocateBytes_;
-  inline static std::atomic<uint64_t> totalLargeAllocateBytes_;
-
  private:
-  inline static std::mutex initMutex_;
+  static std::mutex initMutex_;
   // Singleton instance.
-  inline static std::shared_ptr<MemoryAllocator> instance_;
+  static std::shared_ptr<MemoryAllocator> instance_;
   // Application-supplied custom implementation of MemoryAllocator to be
   // returned by getInstance().
-  inline static MemoryAllocator* FOLLY_NULLABLE customInstance_;
+  static MemoryAllocator* FOLLY_NULLABLE customInstance_;
 };
 
 /// An Allocator backed by MemoryAllocator for STL containers.

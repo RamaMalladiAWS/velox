@@ -148,7 +148,7 @@ class FragmentationTest {
   }
 
   void initMemory(size_t sizeCap) {
-    MmapAllocatorOptions options;
+    MmapAllocator::Options options;
     options.capacity = sizeCap + (64 << 20);
     memory_ = std::make_shared<MmapAllocator>(options);
   }

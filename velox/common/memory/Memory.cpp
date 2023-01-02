@@ -18,11 +18,6 @@
 
 #include "velox/common/base/BitUtil.h"
 
-DEFINE_bool(
-    use_mmap_allocator_for_memory_pool,
-    false,
-    "If true, use MmapMemoryAllocator to allocate memory for MemoryPool");
-
 namespace facebook {
 namespace velox {
 namespace memory {
@@ -50,11 +45,9 @@ constexpr folly::StringPiece kRootNodeName{"__root__"};
 MemoryPool::MemoryPool(
     const std::string& name,
     std::shared_ptr<MemoryPool> parent,
-    uint16_t alignment)
-    : name_(name),
-      alignment_{alignment == 0 ? MemoryAllocator::kMinAlignment : alignment},
-      parent_(std::move(parent)) {
-  MemoryAllocator::validateAlignment(alignment_);
+    const Options& options)
+    : name_(name), alignment_{options.alignment}, parent_(std::move(parent)) {
+  MemoryAllocator::alignmentCheck(0, alignment_);
 }
 
 MemoryPool::~MemoryPool() {
@@ -136,7 +129,7 @@ MemoryPoolImpl::MemoryPoolImpl(
     const std::string& name,
     std::shared_ptr<MemoryPool> parent,
     const Options& options)
-    : MemoryPool{name, parent, options.alignment},
+    : MemoryPool{name, parent, options},
       cap_{options.capacity},
       memoryManager_{memoryManager},
       localMemoryUsage_{},
@@ -144,6 +137,22 @@ MemoryPoolImpl::MemoryPoolImpl(
   VELOX_USER_CHECK_GT(cap_, 0);
 }
 
+MemoryPoolImpl::~MemoryPoolImpl() {
+  if (const auto& tracker = getMemoryUsageTracker()) {
+    // TODO: change to check reserved bytes which including the unused
+    // reservation.
+    auto remainingBytes = tracker->currentBytes();
+    VELOX_CHECK_EQ(
+        0,
+        remainingBytes,
+        "Memory pool should be destroyed only after all allocated memory has been freed. Remaining bytes allocated: {}, cumulative bytes allocated: {}, number of allocations: {}",
+        remainingBytes,
+        tracker->cumulativeBytes(),
+        tracker->numAllocs());
+  }
+}
+
+/* static */
 int64_t MemoryPoolImpl::sizeAlign(int64_t size) {
   const auto remainder = size % alignment_;
   return (remainder == 0) ? size : (size + alignment_ - remainder);
@@ -153,7 +162,7 @@ void* MemoryPoolImpl::allocate(int64_t size) {
   if (this->isMemoryCapped()) {
     VELOX_MEM_MANUAL_CAP();
   }
-  auto alignedSize = sizeAlign(size);
+  const auto alignedSize = sizeAlign(size);
   reserve(alignedSize);
   return allocator_.allocateBytes(alignedSize, alignment_);
 }
@@ -164,7 +173,7 @@ void* MemoryPoolImpl::allocateZeroFilled(int64_t numEntries, int64_t sizeEach) {
   }
   const auto alignedSize = sizeAlign(sizeEach * numEntries);
   reserve(alignedSize);
-  return allocator_.allocateZeroFilled(alignedSize, alignment_);
+  return allocator_.allocateZeroFilled(alignedSize);
 }
 
 void* MemoryPoolImpl::reallocate(
@@ -176,7 +185,7 @@ void* MemoryPoolImpl::reallocate(
   const int64_t difference = alignedNewSize - alignedSize;
   if (FOLLY_UNLIKELY(difference <= 0)) {
     // Track and pretend the shrink took place for accounting purposes.
-    release(-difference, true);
+    release(-difference);
     return p;
   }
 
@@ -310,7 +319,7 @@ int64_t MemoryPoolImpl::cap() const {
   return cap_;
 }
 
-uint16_t MemoryPoolImpl::alignment() const {
+uint16_t MemoryPoolImpl::getAlignment() const {
   return alignment_;
 }
 
@@ -396,7 +405,7 @@ void MemoryPoolImpl::reserve(int64_t size) {
     // more conservative side.
     release(size);
     if (!success) {
-      VELOX_MEM_MANAGER_CAP_EXCEEDED(memoryManager_.capacity());
+      VELOX_MEM_MANAGER_CAP_EXCEEDED(memoryManager_.getMemoryQuota());
     }
     if (manualCap) {
       VELOX_MEM_MANUAL_CAP();
@@ -409,26 +418,26 @@ void MemoryPoolImpl::reserve(int64_t size) {
   }
 }
 
-void MemoryPoolImpl::release(int64_t size, bool mock) {
+void MemoryPoolImpl::release(int64_t size) {
   memoryManager_.release(size);
   localMemoryUsage_.incrementCurrentBytes(-size);
   if (memoryUsageTracker_) {
-    memoryUsageTracker_->update(-size, mock);
+    memoryUsageTracker_->update(-size);
   }
 }
 
 MemoryManager::MemoryManager(const Options& options)
-    : allocator_{options.allocator},
-      alignment_(options.alignment),
-      capacity_{options.capacity},
+    : allocator_{options.allocator->shared_from_this()},
+      memoryQuota_{options.capacity},
+      alignment_(std::max(MemoryAllocator::kMinAlignment, options.alignment)),
       root_{std::make_shared<MemoryPoolImpl>(
           *this,
           kRootNodeName.str(),
           nullptr,
-          MemoryPool::Options{alignment_, capacity_})} {
+          MemoryPool::Options{alignment_, memoryQuota_})} {
   VELOX_CHECK_NOT_NULL(allocator_);
-  VELOX_USER_CHECK_GE(capacity_, 0);
-  MemoryAllocator::validateAlignment(alignment_);
+  VELOX_USER_CHECK_GE(memoryQuota_, 0);
+  MemoryAllocator::alignmentCheck(0, alignment_);
 }
 
 MemoryManager::~MemoryManager() {
@@ -438,8 +447,8 @@ MemoryManager::~MemoryManager() {
   }
 }
 
-int64_t MemoryManager::capacity() const {
-  return capacity_;
+int64_t MemoryManager::getMemoryQuota() const {
+  return memoryQuota_;
 }
 
 uint16_t MemoryManager::alignment() const {
@@ -464,7 +473,7 @@ int64_t MemoryManager::getTotalBytes() const {
 
 bool MemoryManager::reserve(int64_t size) {
   return totalBytes_.fetch_add(size, std::memory_order_relaxed) + size <=
-      capacity_;
+      memoryQuota_;
 }
 
 void MemoryManager::release(int64_t size) {

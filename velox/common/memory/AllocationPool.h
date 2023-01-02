@@ -18,7 +18,7 @@
 #include "velox/common/memory/Memory.h"
 
 namespace facebook::velox {
-// A set of MappedMemory::Allocations holding the fixed width payload
+// A set of MemoryAllocator::Allocations holding the fixed width payload
 // rows. The Runs are filled to the end except for the last one. This
 // is used for iterating over the payload for rehashing, returning
 // results etc. This is used via HashStringAllocator for variable length

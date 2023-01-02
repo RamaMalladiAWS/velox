@@ -96,36 +96,13 @@ std::optional<Spiller::Config> OperatorCtx::makeSpillConfig(
   if (!queryConfig.spillEnabled()) {
     return std::nullopt;
   }
-  if (!queryConfig.spillPath().has_value()) {
+  if (driverCtx_->task->spillDirectory().empty()) {
     return std::nullopt;
   }
-  switch (type) {
-    case Spiller::Type::kOrderBy:
-      if (!queryConfig.orderBySpillEnabled()) {
-        return std::nullopt;
-      }
-      break;
-    case Spiller::Type::kAggregate:
-      if (!queryConfig.aggregationSpillEnabled()) {
-        return std::nullopt;
-      }
-      break;
-    case Spiller::Type::kHashJoinBuild:
-      FOLLY_FALLTHROUGH;
-    case Spiller::Type::kHashJoinProbe:
-      if (!queryConfig.joinSpillEnabled()) {
-        return std::nullopt;
-      }
-      break;
-    default:
-      LOG(ERROR) << "Unknown spiller type: " << Spiller::typeName(type);
-      return std::nullopt;
-  }
-
   return Spiller::Config(
       makeOperatorSpillPath(
-          queryConfig.spillPath().value(),
-          taskId(),
+          driverCtx_->task->spillDirectory(),
+          driverCtx()->pipelineId,
           driverCtx()->driverId,
           operatorId_),
       queryConfig.maxSpillFileSize(),
@@ -165,7 +142,7 @@ Operator::Operator(
           std::stringstream out;
           out << "\nFailed Operator: " << this->operatorType() << "."
               << this->operatorId() << ": "
-              << succinctBytes(tracker.getCurrentTotalBytes());
+              << succinctBytes(tracker.currentBytes());
           return out.str();
         });
   }

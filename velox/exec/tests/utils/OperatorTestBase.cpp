@@ -46,7 +46,7 @@ void OperatorTestBase::registerVectorSerde() {
 }
 
 OperatorTestBase::~OperatorTestBase() {
-  // Revert to default process-wide MappedMemory.
+  // Revert to default process-wide MemoryAllocator.
   memory::MemoryAllocator::setDefaultInstance(nullptr);
 }
 
@@ -55,8 +55,8 @@ void OperatorTestBase::TearDownTestCase() {
 }
 
 void OperatorTestBase::SetUp() {
-  // Sets the process default MappedMemory to an async cache of up
-  // to 4GB backed by a default MappedMemory
+  // Sets the process default MemoryAllocator to an async cache of up
+  // to 4GB backed by a default MemoryAllocator
   if (!asyncDataCache_) {
     asyncDataCache_ = std::make_shared<cache::AsyncDataCache>(
         memory::MemoryAllocator::createDefaultInstance(), 4UL << 30);
